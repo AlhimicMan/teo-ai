@@ -1,0 +1,222 @@
+name: CI and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      image: ${{ steps.meta.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Determine version and image tags
+        id: meta
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/teo-ai-gateway"
+          version="dev-${GITHUB_SHA:0:12}"
+          tags=("${image}:sha-${GITHUB_SHA:0:12}")
+          if [[ "$REF_TYPE" == tag ]]; then
+            if [[ ! "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+              echo 'Release tag must be vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease' >&2
+              exit 1
+            fi
+            version="$REF_NAME"
+            tags+=("${image}:${version}" "${image}:${version#v}")
+            if [[ "$version" != *-* ]]; then
+              tags+=("${image}:latest")
+            fi
+          elif [[ "$REF_NAME" == main ]]; then
+            tags+=("${image}:main")
+          fi
+          {
+            echo "version=$version"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "image=$image"
+            echo 'tags<<TAGS'
+            printf '%s\n' "${tags[@]}"
+            echo TAGS
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - name: Check formatting
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [[ -n "$files" ]]; then
+            printf 'Run gofmt on:\n%s\n' "$files"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  binaries:
+    name: Package client binaries
+    needs: [metadata, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.mod
+      - name: Build macOS and Linux archives
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ needs.metadata.outputs.build_date }}
+        run: bash scripts/package-release.sh
+      - name: Verify archives and run the native Linux binary
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          cd dist/release
+          sha256sum --check checksums.txt
+          temporary="$(mktemp -d)"
+          trap 'rm -rf "$temporary"' EXIT
+          tar -xzf "teo-ai_${VERSION}_linux_amd64.tar.gz" -C "$temporary"
+          "$temporary/teo-ai" version
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: teo-ai-${{ github.sha }}
+          path: dist/release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  docker-check:
+    name: Build and smoke-test gateway
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build image without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: teo-ai-gateway:ci
+          platforms: linux/amd64
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+      - run: bash scripts/smoke-gateway.sh teo-ai-gateway:ci
+      - name: Validate Compose files
+        run: |
+          docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example -f compose.yaml -f compose.build.yaml config --quiet
+          docker compose -f compose.local.yaml config --quiet
+
+  publish-image:
+    name: Publish gateway image
+    if: github.event_name == 'push'
+    needs: [metadata, binaries, docker-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish amd64 and arm64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ needs.metadata.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.metadata.outputs.version }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ needs.metadata.outputs.build_date }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+          provenance: true
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [metadata, binaries, publish-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: teo-ai-${{ github.sha }}
+          path: dist/release
+      - name: Create release and upload client archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.version }}
+        run: |
+          # Published releases are immutable from this workflow; reruns are safe.
+          if state="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$state" == false ]]; then
+              echo 'Release is already published; nothing to change'
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/release/* --clobber
+          flags=(--latest)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags=(--prerelease --latest=false)
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

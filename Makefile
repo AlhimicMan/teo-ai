@@ -1,4 +1,4 @@
-.PHONY: build test check dist key
+.PHONY: build test check dist release key
 
 build:
 	go build -trimpath -o bin/teo-ai ./cmd/teo-ai
@@ -15,6 +15,9 @@ dist:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o dist/teo-ai-linux-arm64 ./cmd/teo-ai
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o dist/teo-ai-darwin-arm64 ./cmd/teo-ai
 	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/teo-ai-darwin-amd64 ./cmd/teo-ai
+
+release:
+	bash scripts/package-release.sh
 
 key:
 	@mkdir -p secrets

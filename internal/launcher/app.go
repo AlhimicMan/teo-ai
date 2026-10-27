@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"teo-ai/internal/buildinfo"
 )
 
 const usage = `teo-ai: native coding clients with personal subscriptions through a gateway
@@ -73,7 +75,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		nativeArgs = nativeArgs[1:]
 	}
 	if command == "version" {
-		fmt.Fprintln(stdout, "teo-ai MVP")
+		fmt.Fprintf(stdout, "teo-ai %s (commit %s, built %s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
 		return nil
 	}
 	if command == "login" {

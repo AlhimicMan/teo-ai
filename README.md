@@ -41,7 +41,7 @@ teo-ai claude → Claude Code → HTTPS gateway /anthropic/*
 
    ```bash
    cp .env.example .env
-   # В .env указать TEO_DOMAIN и ACME_EMAIL.
+   # В .env указать TEO_DOMAIN, ACME_EMAIL и тег TEO_GATEWAY_IMAGE.
    make key
    ```
 
@@ -64,7 +64,8 @@ teo-ai claude → Claude Code → HTTPS gateway /anthropic/*
 
    ```bash
    docker compose config --quiet
-   docker compose up --build -d
+   docker compose pull
+   docker compose up -d
    docker compose ps
    docker compose logs --tail=50 gateway
    curl --fail https://ai.example.com/healthz
@@ -72,8 +73,20 @@ teo-ai claude → Claude Code → HTTPS gateway /anthropic/*
 
    Порт Go gateway не опубликован на хосте: доступен только Caddy в Compose network.
    Контейнер gateway работает от UID 10001, с read-only filesystem и без capabilities.
-   Caddy хранит сертификаты в named volumes. Для обновления достаточно повторить
-   `docker compose up --build -d`; `down -v` удалит сертификаты, обычно это не нужно.
+   Caddy хранит сертификаты в named volumes. Для обновления повторить
+   `docker compose pull` и `docker compose up -d`; `down -v` удалит сертификаты.
+   Образ gateway загружается из GHCR. В `.env` можно закрепить релиз, например
+   `TEO_GATEWAY_IMAGE=ghcr.io/alhimicman/teo-ai-gateway:v0.1.0`, после его выпуска.
+   Тег `main` соответствует последней успешной сборке основной ветки.
+   Если пакет GHCR приватный, на сервере предварительно выполнить
+   `docker login ghcr.io` с GitHub credential, которому разрешено `read:packages`.
+
+   Для сборки из исходников вместо загрузки готового образа:
+
+   ```bash
+   TEO_GATEWAY_IMAGE=teo-ai-gateway:local docker compose \
+     -f compose.yaml -f compose.build.yaml up --build -d
+   ```
 
 4. Передать разработчикам gateway key отдельным защищённым каналом.
    Ни `secrets/`, ни `.env` не включаются в Docker build context и Git.
@@ -96,7 +109,13 @@ docker compose up -d --force-recreate gateway
 Claude Code 2.1.220; совместимость более старых и будущих версий требует проверки.
 В частности, Codex должен поддерживать `--no-daemon` и custom model providers.
 
-Собрать для текущего компьютера:
+Готовые архивы находятся в [GitHub Releases](https://github.com/AlhimicMan/teo-ai/releases).
+Доступны `linux` / `darwin` и `amd64` / `arm64`. Для Apple Silicon нужен
+`darwin_arm64`, для Intel Mac — `darwin_amd64`. Скачать нужный архив и
+`checksums.txt`, проверить его SHA256, распаковать и установить `teo-ai` в `PATH`.
+macOS-бинарники не имеют Developer ID / notarization.
+
+Сборка из исходников для текущего компьютера:
 
 ```bash
 make build
@@ -239,6 +258,77 @@ credential; запросы с `x-api-key` отклоняются. Gateway не �
 UI, хранения диалогов и конвертации протоколов. У key ротация общая; для
 индивидуального offboarding следующая итерация — персональные gateway credentials
 или mTLS. Healthcheck не подтверждает доступность провайдера.
+
+## GitHub Actions и выпуск версий
+
+Workflow [CI and release](https://github.com/AlhimicMan/teo-ai/actions/workflows/ci.yml)
+запускается для pull requests, push в `main`, тегов `v*` и вручную через
+`workflow_dispatch`.
+
+| Событие | Результат |
+|---|---|
+| Pull request / ручной запуск | Тесты Linux/macOS, архивы клиента как Actions artifact, Docker build и smoke test |
+| Push в `main` | Те же проверки и публикация gateway в GHCR с тегами `main` и `sha-<12 символов SHA>` |
+| Push `vX.Y.Z` | Те же проверки, версионный Docker image и GitHub Release с архивами клиента |
+| Push `vX.Y.Z-rc.1` | Prerelease с версионным образом, без обновления `latest` |
+
+На Linux и macOS выполняются `gofmt`, `go vet` и `go test -race -count=1`.
+Перед публикацией образ дополнительно запускается с read-only filesystem,
+без capabilities, с отдельным тестовым gateway key. Проверяются healthcheck,
+отказ без ключа и авторизованный `/readyz`. Личные подписки и provider tokens
+не нужны ни одному CI job.
+
+Публикация разрешена только push-событиям и зависит от успешных тестов,
+упаковки бинарников и Docker smoke test. PR не публикуют образы или releases.
+Actions закреплены по commit SHA; jobs проверки имеют только `contents: read`,
+публикация образа — `packages: write`, публикация release — `contents: write`.
+Используется встроенный `GITHUB_TOKEN`; дополнительные repository secrets не нужны.
+GitHub Actions должны быть включены, а настройки аккаунта/организации должны
+разрешать публикацию пакетов и создание релизов этим токеном.
+
+Gateway image: `ghcr.io/alhimicman/teo-ai-gateway`, платформы
+`linux/amd64` и `linux/arm64`. Тег `v0.1.0` также получает alias `0.1.0`;
+стабильный выпуск обновляет `latest`. Образ построен на `scratch` с CA bundle,
+статическим Go executable и UID/GID `10001:10001`; QEMU для сборки не требуется.
+
+Для выпуска новой версии после успешного CI на `main`:
+
+```bash
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m 'Release v0.1.0'
+git push origin v0.1.0
+```
+
+Использовать свободную версию. Поддерживается формат `vMAJOR.MINOR.PATCH`
+и prerelease suffix, например `v0.2.0-rc.1`. Workflow сначала публикует image,
+затем создаёт draft release, загружает assets и публикует release. При сбое
+можно повторить workflow: незавершённый draft будет заполнен, уже опубликованный
+release повторно не изменяется. Tags опубликованных версий перемещать не следует.
+
+В release прикладываются:
+
+```text
+teo-ai_v0.1.0_linux_amd64.tar.gz
+teo-ai_v0.1.0_linux_arm64.tar.gz
+teo-ai_v0.1.0_darwin_amd64.tar.gz
+teo-ai_v0.1.0_darwin_arm64.tar.gz
+checksums.txt
+```
+
+Каждый архив содержит `teo-ai` и README. `teo-ai version` показывает версию,
+commit и время сборки. Бинарник gateway отдельно не выпускается — сервер
+распространяется как Docker image. Архивы последней CI-сборки также доступны
+в Actions artifacts и хранятся 14 дней.
+
+Локальная проверка упаковки:
+
+```bash
+VERSION=v0.1.0 make release
+cd dist/release
+# Linux: sha256sum --check checksums.txt
+shasum -a 256 --check checksums.txt
+```
 
 ## Источники протокола
 

@@ -1,0 +1,4 @@
+# Optional source-build override for the server stack.
+services:
+  gateway:
+    build: .

@@ -2,7 +2,7 @@ name: teo-ai
 
 services:
   gateway:
-    build: .
+    image: ${TEO_GATEWAY_IMAGE:-ghcr.io/alhimicman/teo-ai-gateway:main}
     restart: unless-stopped
     environment:
       TEO_LISTEN_ADDR: :8080
