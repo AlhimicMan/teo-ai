@@ -1,0 +1,59 @@
+name: teo-ai
+
+services:
+  gateway:
+    build: .
+    restart: unless-stopped
+    environment:
+      TEO_LISTEN_ADDR: :8080
+      TEO_GATEWAY_KEY_FILE: /run/secrets/gateway_key
+    secrets:
+      - gateway_key
+    expose:
+      - "8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /usr/local/bin/teo-ai-gateway, -healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      TEO_DOMAIN: ${TEO_DOMAIN:?Set TEO_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  gateway_key:
+    file: ./secrets/gateway-key
+
+volumes:
+  caddy_data:
+  caddy_config:

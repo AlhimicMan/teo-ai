@@ -1,0 +1,23 @@
+name: teo-ai-local
+
+# Standalone local stack: docker compose -f compose.local.yaml up --build -d
+services:
+  gateway:
+    build: .
+    environment:
+      TEO_LISTEN_ADDR: :8080
+      TEO_GATEWAY_KEY_FILE: /run/secrets/gateway_key
+    secrets: [gateway_key]
+    ports: ["127.0.0.1:${TEO_LOCAL_PORT:-8080}:8080"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /usr/local/bin/teo-ai-gateway, -healthcheck]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+secrets:
+  gateway_key:
+    file: ./secrets/gateway-key

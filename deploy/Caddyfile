@@ -1,0 +1,21 @@
+{
+	email {$ACME_EMAIL}
+	# Reverse-proxy error logs can contain request metadata even without access
+	# logging. Drop headers and URI there as well.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri delete
+			}
+		}
+	}
+}
+
+{$TEO_DOMAIN} {
+	# Access logging is intentionally disabled: never log client credentials.
+	reverse_proxy gateway:8080 {
+		flush_interval -1
+	}
+}

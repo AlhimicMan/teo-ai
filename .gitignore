@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/.env
+/secrets/*
+!/secrets/.gitkeep
+*.test
+coverage.out
