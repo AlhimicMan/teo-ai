@@ -27,8 +27,9 @@ Usage:
   teo-ai doctor
   teo-ai version
 
-Global flags (before the command): --config, --gateway, --key-file
-Environment: TEO_AI_CONFIG, TEO_AI_GATEWAY_URL, TEO_AI_GATEWAY_KEY_FILE
+Global flags (before the command): --config, --gateway, --key-file, --insecure-skip-tls-verify
+Environment: TEO_AI_CONFIG, TEO_AI_GATEWAY_URL, TEO_AI_GATEWAY_KEY_FILE,
+             TEO_AI_INSECURE_SKIP_TLS_VERIFY
 Login and token refresh are performed only by the native clients.
 `
 
@@ -58,6 +59,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	configPath := fs.String("config", defaultPath, "configuration file")
 	gateway := fs.String("gateway", os.Getenv("TEO_AI_GATEWAY_URL"), "gateway HTTPS origin")
 	keyFile := fs.String("key-file", os.Getenv("TEO_AI_GATEWAY_KEY_FILE"), "gateway credential file")
+	var insecure optionalBool
+	if value, present := os.LookupEnv("TEO_AI_INSECURE_SKIP_TLS_VERIFY"); present {
+		if err := insecure.Set(value); err != nil {
+			return err
+		}
+	}
+	fs.Var(&insecure, "insecure-skip-tls-verify", "skip certificate verification only for the MVP gateway")
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,6 +109,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		initFlags.SetOutput(stderr)
 		initFlags.StringVar(gateway, "gateway", *gateway, "gateway HTTPS origin")
 		initFlags.StringVar(keyFile, "key-file", *keyFile, "gateway credential file")
+		initFlags.Var(&insecure, "insecure-skip-tls-verify", "skip certificate verification only for the MVP gateway")
 		if err := initFlags.Parse(nativeArgs); err != nil {
 			return err
 		}
@@ -113,6 +122,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if *keyFile != "" {
 		cfg.KeyFile = *keyFile
+	}
+	if insecure.set {
+		cfg.InsecureSkipTLSVerify = insecure.value
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -138,7 +150,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return doctor(cfg, key, stdout)
 	default:
-		plan, err := BuildPlan(command, nativeArgs, cfg, key, os.Environ())
+		launchConfig := cfg
+		if cfg.InsecureSkipTLSVerify {
+			endpoint, cleanup, err := startInsecureRelay(cfg, key)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			launchConfig.GatewayURL = endpoint
+		}
+		plan, err := BuildPlan(command, nativeArgs, launchConfig, key, os.Environ())
 		if err != nil {
 			return err
 		}
@@ -190,7 +211,9 @@ func doctor(cfg Config, key string, out io.Writer) error {
 			fmt.Fprintln(out, tool+": installed")
 		}
 	}
-	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	transport := gatewayTransport(cfg.InsecureSkipTLSVerify)
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.GatewayURL, "/")+"/readyz", nil)
 	req.Header.Set(keyHeader, key)
 	resp, err := client.Do(req)
@@ -208,6 +231,9 @@ func doctor(cfg Config, key string, out io.Writer) error {
 		return errors.New("gateway returned an unexpected readiness response; check the configured address")
 	}
 	fmt.Fprintln(out, "gateway: reachable; gateway key accepted")
+	if cfg.InsecureSkipTLSVerify {
+		fmt.Fprintln(out, "gateway TLS certificate verification: disabled (MVP)")
+	}
 	fmt.Fprintln(out, "Provider access was not tested. Check native /status and send a test prompt.")
 	return nil
 }

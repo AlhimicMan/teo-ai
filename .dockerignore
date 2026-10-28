@@ -1,6 +1,7 @@
 .git
 .env
 secrets
+tls
 bin
 dist
 *.test

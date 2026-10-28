@@ -1,0 +1,43 @@
+name: teo-ai
+
+# Standalone IP/self-signed deployment: only TEO_TLS_PORT (default 8443) is public.
+services:
+  gateway:
+    image: ${TEO_GATEWAY_IMAGE:-ghcr.io/alhimicman/teo-ai-gateway:v0.1.0}
+    restart: unless-stopped
+    environment:
+      TEO_LISTEN_ADDR: :8080
+      TEO_GATEWAY_KEY_FILE: /run/secrets/gateway_key
+    secrets: [gateway_key]
+    expose: ["8080"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, /usr/local/bin/teo-ai-gateway, -healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      gateway: {condition: service_healthy}
+    ports: ["${TEO_TLS_PORT:-8443}:443"]
+    volumes:
+      - ./deploy/Caddyfile.selfsigned:/etc/caddy/Caddyfile:ro
+      - ./tls:/etc/teo-ai/tls:ro
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+secrets:
+  gateway_key:
+    file: ./secrets/gateway-key

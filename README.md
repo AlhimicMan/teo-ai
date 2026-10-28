@@ -91,6 +91,56 @@ teo-ai claude → Claude Code → HTTPS gateway /anthropic/*
 4. Передать разработчикам gateway key отдельным защищённым каналом.
    Ни `secrets/`, ни `.env` не включаются в Docker build context и Git.
 
+### IP, другой порт и самоподписной TLS для MVP
+
+Для сервера без домена есть отдельный `compose.selfsigned.yaml`. Он публикует
+только HTTPS-порт `TEO_TLS_PORT` (по умолчанию `8443`) и не занимает `80/443`.
+Нужен Docker Compose plugin. Пример подготовки после создания gateway key:
+
+```bash
+mkdir -p tls
+chmod 0700 tls
+TEO_SERVER_IP=192.0.2.10
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \
+  -subj '/CN=teo-ai MVP gateway' \
+  -addext "subjectAltName=IP:${TEO_SERVER_IP}" \
+  -keyout tls/server.key -out tls/server.crt
+chmod 0600 tls/server.key
+chmod 0644 tls/server.crt
+# В .env задать TEO_TLS_PORT=8443 и закреплённый TEO_GATEWAY_IMAGE.
+docker compose -f compose.selfsigned.yaml up -d --wait
+```
+
+Каталог `tls/` исключён из Git и Docker build context. Self-signed конфигурация
+использует `deploy/Caddyfile.selfsigned`; ACME и DNS для неё не нужны.
+
+Порт клиента задаётся в URL. В новой сборке клиента можно явно сохранить
+отключение проверки TLS только для gateway:
+
+```bash
+teo-ai init --gateway https://192.0.2.10:8443 \
+  --key-file /path/to/gateway-key --insecure-skip-tls-verify
+teo-ai doctor
+teo-ai codex
+teo-ai claude
+```
+
+Настройка сохраняется как `"insecure_skip_tls_verify": true`. Разовое переопределение:
+`teo-ai --insecure-skip-tls-verify doctor`; переменная окружения:
+`TEO_AI_INSECURE_SKIP_TLS_VERIFY=true`. Значение `false` в явном флаге отключает
+сохранённый режим. По умолчанию сертификаты проверяются. Этот флаг добавлен после
+`v0.1.0`, поэтому для него нужна обновлённая сборка клиента, а сервер может
+продолжать работать на gateway image `v0.1.0`.
+
+В этом режиме обёртка на время сессии создаёт relay на `127.0.0.1` со случайным
+портом. До удалённого gateway relay обращается по HTTPS с отключённой проверкой
+сертификата, а native CLI использует локальный HTTP endpoint. Relay требует
+gateway key, сохраняет streaming и закрывается вместе с дочерним процессом.
+В `/status` CLI будет виден loopback URL; удалённый адрес остаётся в конфигурации
+`teo-ai`. Штатный вход и другие HTTPS-соединения клиентов продолжают проверять TLS.
+Глобальная проверка Node/OpenSSL не отключается. Этот режим предназначен для
+MVP: удостоверение подлинности сертификата gateway в нём отсутствует.
+
 ### Ротация gateway key
 
 Заменить файл новым файлом со случайным ключом, сохранить права `0444` и выполнить:

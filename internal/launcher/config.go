@@ -13,8 +13,9 @@ import (
 )
 
 type Config struct {
-	GatewayURL string `json:"gateway_url"`
-	KeyFile    string `json:"gateway_key_file"`
+	GatewayURL            string `json:"gateway_url"`
+	KeyFile               string `json:"gateway_key_file"`
+	InsecureSkipTLSVerify bool   `json:"insecure_skip_tls_verify,omitempty"`
 }
 
 func DefaultConfigPath() (string, error) {

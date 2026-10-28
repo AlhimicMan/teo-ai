@@ -2,6 +2,7 @@
 /dist/
 /.env
 /secrets/*
+/tls/
 !/secrets/.gitkeep
 *.test
 coverage.out

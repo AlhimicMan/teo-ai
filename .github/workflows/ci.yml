@@ -147,6 +147,7 @@ jobs:
           docker compose --env-file .env.example config --quiet
           docker compose --env-file .env.example -f compose.yaml -f compose.build.yaml config --quiet
           docker compose -f compose.local.yaml config --quiet
+          docker compose -f compose.selfsigned.yaml config --quiet
 
   publish-image:
     name: Publish gateway image
