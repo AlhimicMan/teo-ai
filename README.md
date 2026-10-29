@@ -1,6 +1,6 @@
 # teo-ai
 
-MVP корпоративного reverse proxy и утилиты запуска Codex CLI / Claude Code
+MVP корпоративного reverse proxy и утилиты запуска Codex CLI / Codex Desktop / Claude Code
 с **личными подписками разработчиков**. Go 1.26+, только стандартная библиотека.
 Клиент поддерживает macOS и Linux, сервер — Linux / Docker Compose.
 
@@ -222,6 +222,65 @@ teo-ai claude -- -p "Объясни структуру проекта"
 начальный `--` необязателен и удаляется. Рабочий каталог, stdin/stdout/stderr
 и код завершения сохраняются; SIGINT/SIGTERM/SIGHUP/SIGQUIT передаются дочернему процессу.
 
+### Codex Desktop (macOS)
+
+После обычного `teo-ai init` и входа в ChatGPT:
+
+```bash
+# Сначала полностью закрыть Desktop через Cmd+Q.
+teo-ai desktop
+# Если приложение установлено в другом месте:
+teo-ai desktop --app "/path/to/Codex.app"
+```
+
+Команда ищет `Codex.app`, затем `ChatGPT.app` в `~/Applications` и `/Applications`.
+Поддерживается приложение с Codex backend; для редактирования конфигурации
+используется встроенный `Contents/Resources/codex` / `codex-cli`, либо `codex` из
+`PATH`. Backend должен поддерживать `app-server` и `config/batchWrite`.
+На Linux команда возвращает сообщение о поддержке только macOS.
+
+Desktop читает общий `~/.codex/config.toml` (или `$CODEX_HOME/config.toml`).
+На время сессии teo-ai сохраняет резервную копию и задаёт provider `teo_ai`,
+`base_url=<gateway>/codex`, `requires_openai_auth=true`, ChatGPT login и HTTP/SSE
+без WebSocket. Существующий provider `teo_ai` временно заменяется целиком,
+чтобы старые API credentials не конфликтовали с личным входом.
+Остальные параметры сохраняет штатный TOML-редактор Codex, работающий над
+приватной копией в отдельном служебном каталоге без native credentials.
+
+Gateway key передаётся только через окружение процесса Desktop. Его значение
+не записывается в TOML и не попадает в argv. Приложение запускается напрямую,
+поэтому уже запущенный Desktop нужно полностью закрыть: команда отказывается
+подключаться к процессу со старым окружением. Не запускайте параллельно другие
+клиенты Codex: они читают тот же временно изменённый конфиг.
+
+Терминал остаётся занят до полного выхода из приложения через Cmd+Q.
+Для self-signed режима локальный relay работает всё это время; глобальная
+проверка TLS не отключается. После выхода восстанавливаются исходные байты
+и права config.toml; если файла не было, он удаляется. Ошибка запуска приложения
+и обработанные сигналы также приводят к восстановлению после выхода процесса.
+
+Если Desktop или пользователь изменил конфиг во время сессии, teo-ai сохраняет
+изменения и сообщает путь резервной копии, вместо того чтобы их перезаписывать.
+После SIGKILL/аварии также может остаться каталог `.teo-ai-desktop` рядом с
+конфигом. Он блокирует повторный запуск до восстановления: полностью закройте
+Desktop, сравните текущий config.toml с `config.original.toml` в этом каталоге,
+восстановите исходные настройки provider и удалите служебный каталог.
+Если вместо резервной копии есть `config.was-absent`, исходного config.toml не было.
+
+Проверка без подписки: `make test` использует fake backend и fake Desktop,
+проверяет relay, приватность ключа, блокировку, восстановление и сохранение
+изменений пользователя. Для проверки штатного TOML-редактора установленного CLI:
+
+```bash
+TEO_TEST_CODEX_BACKEND="$(command -v codex)" go test -run TestDesktopNativeConfigEditor -v ./internal/launcher
+```
+
+Этот тест использует отдельные временные каталоги, не открывает GUI и не делает
+inference. Реальный Desktop нужно отдельно проверить новым чатом, продолжением,
+инструментами и streaming, подтвердив запросы `/codex` в логах gateway.
+Managed policy и выбранные профили могут переопределять локальную конфигурацию.
+Вход, MCP, плагины и прочие соединения приложения не становятся частью proxy.
+
 ### Настройки авторизации
 
 Codex запускается с `requires_openai_auth=true`, `forced_login_method="chatgpt"`
@@ -233,7 +292,7 @@ provider access token поставляет сам Codex. `--no-daemon` искл�
 Claude получает `ANTHROPIC_BASE_URL`, отдельный gateway header и
 `forceLoginMethod="claudeai"`. На время запуска выключается `apiKeyHelper`,
 очищаются API credentials и переключатели Bedrock/Vertex/Foundry/Mantle.
-Оригинальные `~/.codex/config.toml` и `~/.claude/settings.json` не редактируются.
+В CLI-режимах оригинальные `~/.codex/config.toml` и `~/.claude/settings.json` не редактируются.
 Остальные пользовательские и проектные настройки продолжают загружаться.
 
 Чтобы file-based `env` не переопределил маршрут, Claude получает runtime settings

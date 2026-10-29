@@ -24,6 +24,7 @@ Usage:
   teo-ai login claude
   teo-ai codex [--] [native arguments...]
   teo-ai claude [--] [native arguments...]
+  teo-ai desktop [--app /path/to/Codex.app]
   teo-ai doctor
   teo-ai version
 
@@ -86,6 +87,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "teo-ai %s (commit %s, built %s)\n", buildinfo.Version, buildinfo.Commit, buildinfo.Date)
 		return nil
 	}
+	if command == "desktop" && len(nativeArgs) == 1 && (nativeArgs[0] == "--help" || nativeArgs[0] == "-h") {
+		return launchDesktop(nativeArgs, Config{}, "", stdin, stdout, stderr)
+	}
 	if command == "login" {
 		plan, err := loginPlan(nativeArgs, os.Environ())
 		if err != nil {
@@ -93,7 +97,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return execute(plan, stdin, stdout, stderr)
 	}
-	if command != "init" && command != "doctor" && command != "codex" && command != "claude" {
+	if command != "init" && command != "doctor" && command != "codex" && command != "claude" && command != "desktop" {
 		return errors.New("unknown command; run teo-ai help")
 	}
 	path, err := expandPath(*configPath)
@@ -149,6 +153,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return errors.New("doctor takes no arguments")
 		}
 		return doctor(cfg, key, stdout)
+	case "desktop":
+		return launchDesktop(nativeArgs, cfg, key, stdin, stdout, stderr)
 	default:
 		launchConfig := cfg
 		if cfg.InsecureSkipTLSVerify {
